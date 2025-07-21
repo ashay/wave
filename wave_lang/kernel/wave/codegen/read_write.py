@@ -33,6 +33,7 @@ from wave_lang.support.ir_imports import (
 from wave_lang.aot.support.ir_utils import (
     _is_float_type,
 )
+from wave_lang.kernel.wave.constraints import MMAType
 
 from ..._support.indexing import IndexExpr, IndexingContext, IndexSequence, IndexSymbol
 from ...compiler.base import ValidationError
@@ -54,7 +55,7 @@ from ...ops.wave_ops import (
     write,
     scatter_add,
 )
-from ..utils.general_utils import get_fastest_index, infer_dim
+from ..utils.general_utils import get_fastest_index, infer_dim, get_hardware_constraint
 from ..utils.mapping_utils import transform_index_on_mapping
 from ..utils.symbol_utils import safe_subs, subs_idxc, is_literal
 from .emitter import (
@@ -735,6 +736,32 @@ def _create_vec_read_write(
         return
 
 
+def emit_hardware_transpose_intrinsic(
+    vector_type: VectorType, stride, kb_src, hardware_constraint, emitter
+) -> Value:
+    tid = hardware_constraint.linearized_thread_id % hardware_constraint.threads_per_wave
+    tid_mlir = gen_sympy_index(add_emitter_subs(emitter), tid)
+
+    two = arith_d.constant(IndexType.get(), 2)
+    eight = arith_d.constant(IndexType.get(), 8)
+    sixteen = arith_d.constant(IndexType.get(), 16)
+    thirty_two = arith_d.constant(IndexType.get(), 32)
+
+    def select_indices(mfma):
+        match hardware_constraint.mma_type:
+            case MMAType.I32_16x16x32_I8:
+                row = arith_d.divsi(tid_mlir, two)
+                col = arith_d.muli(arith_d.remsi(tid_mlir, two), eight)
+                return [row, col]
+
+            case MMAType.I32_32x32x16_I8:
+                row = arith_d.addi(arith_d.muli(arith_d.divsi(tid_mlir, thirty_two), eight), arith_d.divsi(arith_d.remsi(tid_mlir, sixteen), two))
+                col = arith_d.addi(arith_d.muli(arith_d.remsi(tid_mlir, two), eight), arith_d.muli(arith_d.remsi(arith_d.divsi(tid_mlir, sixteen), two), sixteen))
+                return [row, col]
+
+    indices = select_indices(hardware_constraint.mma_type)
+    return amdgpu_d.transpose_load(vector_type, kb_src, indices)
+
 @handle_op(read)
 def handle_read(emitter: WaveEmitter, node: fx.Node):
     # This is similar to tkl.store with fixed start indices for now.
@@ -756,25 +783,60 @@ def handle_read(emitter: WaveEmitter, node: fx.Node):
     vector_type = VectorType.get(vector_shape, element_type)
     input_shape = _get_symbolic_shape(memory)
     elements_per_thread = cast_py_literal(emitter, elements_per_thread)
-    if get_custom(node).has_identity_mapping():
+    if get_custom(node).has_identity_mapping() or (hasattr(node, "transpose") and node.transpose):
         start_indices, start_indices_wg, start_indices_th = _build_start_indices(
             emitter, index
         )
-        mask = _build_mask(emitter, index, elements_per_thread, bounds)
-        result = _create_vec_read_write(
+
+        mask = _build_mask(
             emitter,
-            input_shape,
-            kb_src,
-            None,
-            vector_type,
-            start_indices,
-            start_indices_wg,
-            start_indices_th,
+            index,
             elements_per_thread,
-            get_custom(memory),
-            mask,
-            offsets_vec=None,
+            bounds
         )
+
+        memory_node = get_custom(memory)
+        hardware_constraint = get_hardware_constraint(emitter.constraints)
+
+        type_width = element_type.width
+        element_count = subs_idxc(elements_per_thread)
+        valid_transpose_types = [
+            # pairs of element type width and element count
+            (4, 16),
+            (6, 16),
+            (8, 8),
+            (16, 4),
+        ]
+
+        use_hw_transpose = (
+            not mask
+            and hasattr(memory_node, "hardware_transpose")
+            and memory_node.hardware_transpose
+            and (type_width, element_count) in valid_transpose_types
+        )
+
+        if use_hw_transpose:
+            # distributed shape is shape in shared mem. last dim is stride
+            stride_expr = memory_node.distributed_shape[-1]
+            stride = gen_sympy_index(add_emitter_subs(emitter), stride_expr) # symbolic -> mlir
+            result = emit_hardware_transpose_intrinsic(
+                vector_type, stride, kb_src, hardware_constraint, emitter
+            )
+        else:
+            result = _create_vec_read_write(
+                emitter,
+                input_shape,
+                kb_src,
+                None,
+                vector_type,
+                start_indices,
+                start_indices_wg,
+                start_indices_th,
+                elements_per_thread,
+                get_custom(memory),
+                mask,
+                offsets_vec=None,
+            )
     else:
         dyn_vals = tuple(
             cast_vector(emitter, reg, element_type=IndexType.get()) for reg in dyn_vals
