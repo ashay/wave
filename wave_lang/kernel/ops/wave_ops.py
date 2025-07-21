@@ -1200,6 +1200,7 @@ class Allocate(CustomOp):
     parent: Optional[fx.Node] = None
     offset: Optional[IndexExpr] = None
     tail_padding: int = 0  # Padding after the array end
+    hardware_transpose: bool = False    # whether to emit transpose_load op
 
     @property
     def indexing_dims(self) -> list[IndexSymbol]:
@@ -1594,6 +1595,7 @@ class Read(CustomOp):
     mapping_dynamic_vals: tuple[fx.Node, ...] = ()
     bounds: Optional[dict[IndexSymbol, IndexExpr]] = None
     _write_dependency: Optional[list[fx.Node]] = None
+    transpose = False
 
     @property
     def indexing_dims(self) -> list[IndexSymbol]:
