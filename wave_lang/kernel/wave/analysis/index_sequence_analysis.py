@@ -827,7 +827,7 @@ def get_reduce_mapping(
 
         # Compute the index sequence for the reduction dimension based on the
         # threads per wave and the vector size.
-        threads_per_wave = hardware_constraint.threads_per_wave
+        threads_per_wave = math.prod(hardware_constraint.threads_per_wave)
         vector_size = hardware_constraint.vector_shapes[dim]
         assert (
             vector_size % threads_per_wave == 0

@@ -100,7 +100,8 @@ def emit_global_scan(
     TODO: Can we make it more efficient?
     """
     lane_id = (
-        hardware_constraint.linearized_thread_id % hardware_constraint.threads_per_wave
+        hardware_constraint.linearized_thread_id %
+        math.prod(hardware_constraint.threads_per_wave)
     )
 
     scanop_result = local_scan[-1][-1]
@@ -233,7 +234,7 @@ def decompose_scan_ops(
         c for c in constraints if isinstance(c, HardwareConstraint)
     )
 
-    subgroup_size = hardware_constraint.threads_per_wave
+    subgroup_size = math.prod(hardware_constraint.threads_per_wave)
 
     for node in scan_nodes:
         custom = get_custom(node)

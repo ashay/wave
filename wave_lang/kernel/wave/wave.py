@@ -13,6 +13,7 @@ from itertools import chain
 # Others
 from typing import Any, Callable, Optional, Sequence, get_type_hints
 
+from math import prod
 import sympy
 import torch.fx as fx
 from sympy.utilities.lambdify import lambdastr
@@ -468,7 +469,7 @@ class LaunchableWave(Launchable):
         mb = builder.ModuleBuilder(context=context, module_op=module_op)
         exe = dispatch_codegen.StreamExecutable(mb, name=entrypoint_name)
         workgroup_size = self.hardware_constraints[0].threads_per_block
-        subgroup_size = self.hardware_constraints[0].threads_per_wave
+        subgroup_size = prod(self.hardware_constraints[0].threads_per_wave)
 
         # Setup LLVM func compilation configs.
         llvm_func_config = {}

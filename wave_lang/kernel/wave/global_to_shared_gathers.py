@@ -299,7 +299,7 @@ def global_to_shared_gathers(trace: CapturedTrace, constraints: list[Constraint]
         if isinstance(c, TilingConstraint) or isinstance(c, WorkgroupConstraint)
     }
 
-    total_number_of_threads = hardware_constraint.threads_per_wave * prod(
+    total_number_of_threads = prod(hardware_constraint.threads_per_wave) * prod(
         hardware_constraint.waves_per_block
     )
     element_type = get_custom(global_gathers[0]).type.dtype

@@ -212,13 +212,14 @@ def emit_interwave_reduction(
 
     # Compute basic HW information.
     lane_id = (
-        hardware_constraint.linearized_thread_id % hardware_constraint.threads_per_wave
+        hardware_constraint.linearized_thread_id %
+        math.prod(hardware_constraint.threads_per_wave)
     )
 
     # Determining wave id along reduction dim.
     wave_id = delinearize_index(
         hardware_constraint.linearized_thread_id
-        // hardware_constraint.threads_per_wave,
+        // math.prod(hardware_constraint.threads_per_wave),
         hardware_constraint.waves_per_block,
     )
     reduction_wg_dim = wg_constraint_map[reduction_dim].workgroup_dim
@@ -317,7 +318,7 @@ def decompose_reduce_ops(
     workgroup_constraint_map = {
         c.dim: c for c in constraints if isinstance(c, WorkgroupConstraint)
     }
-    subgroup_size = hardware_constraint.threads_per_wave
+    subgroup_size = math.prod(hardware_constraint.threads_per_wave)
     for node in reduce_nodes:
         custom = get_custom(node)
         with custom.graph.inserting_before(custom.fx_node):

@@ -316,7 +316,7 @@ def gather_to_shared(
         return
 
     hardware_constraint = get_hardware_constraint(constraints)
-    threads_per_wave = hardware_constraint.threads_per_wave
+    threads_per_wave = math.prod(hardware_constraint.threads_per_wave)
     waves_per_block = hardware_constraint.waves_per_block
     threads_per_block = hardware_constraint.threads_per_block
     total_number_of_threads = prod(threads_per_block)

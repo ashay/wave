@@ -383,7 +383,7 @@ def in_thread_transpose(trace: CapturedTrace, constraints: list[Constraint]):
     }
 
     hardware_constraint = get_hardware_constraint(constraints)
-    total_number_of_threads = hardware_constraint.threads_per_wave * prod(
+    total_number_of_threads = prod(hardware_constraint.threads_per_wave) * prod(
         hardware_constraint.waves_per_block
     )
 

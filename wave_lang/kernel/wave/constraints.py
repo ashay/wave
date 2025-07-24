@@ -4,6 +4,7 @@
 # See https://llvm.org/LICENSE.txt for license information.
 # SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 
+from math import prod
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from enum import Enum
@@ -215,7 +216,7 @@ class HardwareConstraint(Constraint):
     the mapping from symbols to shapes should be injective.
     """
 
-    threads_per_wave: int
+    threads_per_wave: tuple[int, int, int]
     waves_per_block: Optional[tuple[int, int, int]] = None
     mma_type: Optional[MMAType | ScaledMMAType] = MMAType.F32_16x16x16_F16
     vector_shapes: Optional[dict[IndexSymbol, int]] = None
@@ -245,7 +246,7 @@ class HardwareConstraint(Constraint):
         match mma_type:
             # M x N x K
             case GenericDot():
-                return mma_type.get_shape(self.threads_per_wave)
+                return mma_type.get_shape(prod(self.threads_per_wave))
             case MMAType.F32_16x16x16_F16 | MMAType.I32_16x16x16_I8:
                 return (16, 16, 16)
             case MMAType.F32_32x32x8_F16 | MMAType.I32_32x32x8_I8:
@@ -272,14 +273,15 @@ class HardwareConstraint(Constraint):
                 raise ValueError(f"Unsupported MMA type: {mma_type}")
 
     def mma_index_offset(self, mma_type: Optional[MMAType | ScaledMMAType]):
-        lane = self.linearized_thread_id % self.threads_per_wave
+        lane = self.linearized_thread_id % prod(self.threads_per_wave)
         if mma_type is None:
             mma_type = self.mma_type
 
         match mma_type:
             # (M x K, N x K) -> M x N
             case GenericDot():
-                offset = mma_type.get_index_offset(lane, self.threads_per_wave)
+                offset = mma_type.get_index_offset(lane,
+                        prod(self.threads_per_wave))
             case MMAType.F32_16x16x16_F16 | MMAType.I32_16x16x16_I8:
                 offset = [
                     Piecewise(
@@ -401,8 +403,10 @@ class HardwareConstraint(Constraint):
     @property
     def threads_per_block(self) -> tuple[int]:
         return (
-            self.waves_per_block[0] * self.threads_per_wave,
-        ) + self.waves_per_block[1:]
+            self.waves_per_block[0] * self.threads_per_wave[0],
+            self.waves_per_block[1] * self.threads_per_wave[1],
+            self.waves_per_block[2] * self.threads_per_wave[2],
+        )
 
     @property
     def linearized_thread_id(self) -> IndexExpr:
@@ -438,7 +442,7 @@ class HardwareConstraint(Constraint):
         # number of threads in that dimension to prevent double counting of thread ID in thread
         # independent index.
         # TODO: Change threads_per_wave to specify all 3 dimensions as opposed to just first.
-        threads_per_dim = self.threads_per_wave if workgroup_dim == 0 else 1
+        threads_per_dim = prod(self.threads_per_wave)
         thread_id = thread_id % threads_per_dim
         return IndexSequence(
             thread_id * elements_per_thread, elements_per_thread, stride
@@ -457,8 +461,8 @@ class HardwareConstraint(Constraint):
         match mma_type:
             # (M x K, N x K) -> M x N
             case GenericDot():
-                size = mma_type.get_index_size(self.threads_per_wave)
-                stride = mma_type.get_index_stride(self.threads_per_wave)
+                size = mma_type.get_index_size(prod(self.threads_per_wave))
+                stride = mma_type.get_index_stride(prod(self.threads_per_wave))
             case MMAType.F32_16x16x16_F16 | MMAType.I32_16x16x16_I8:
                 size = [
                     Piecewise((1, ~MMA_ACC), (4, MMA_ACC)),  # M
@@ -760,7 +764,7 @@ class WaveConstraint(DistributionConstraint):
         # Only handling the wg_dim_0 case because Wave assumes
         # all threads in a wave are handled in wg_dim_0.
         if workgroup_constraint.workgroup_dim == 0:
-            self.wave_id = floor(self.wave_id / hardware_constraint.threads_per_wave)
+            self.wave_id = floor(self.wave_id / prod(hardware_constraint.threads_per_wave))
         assert (
             old_wave_id is None or self.wave_id == old_wave_id
         ), f"Conflicting preset wave_id old: {old_wave_id} new: {self.wave_id}"
