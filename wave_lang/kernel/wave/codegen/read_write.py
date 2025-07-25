@@ -643,88 +643,13 @@ def _create_vec_read_write(
                 vector_d.maskedstore(mem, indices, mask, value)
                 return
 
-    # Case 3: Generate efficient "unrolled" gather and scatter using vector.load/store if strides are constants.
-    #
-    # Per vector.gather/vector.scatter ABI, case 3 and 4 takes N-d indices as base offset,
-    # and offset_vec which is vector of linearized indices as additional offsets.
-    # TODO: Drop case 3 and case 4, by adding support for non-trivial mapping and readOps on partition_strided_operator.
-    if has_int_strides:
-        vec1 = VectorType.get([1], element_type)
-        vec1_mask = VectorType.get([1], IntegerType.get_signless(1))
-        # TODO: Need static strides for linearize to work.
-        mem, _ = _linearize_memref(
-            mem, start_indices, (0,) * len(start_indices), strides
-        )
-        if buffer_ops_enabled:
-            mem = _cast_buffer_and_encode_stride(mem, strides, element_type, emitter)
-
-        # Unroll gather/scatter into individual masked ops.
-        # Vector canonicalizations will convert them into unmasked later if
-        # mask is constant.
-        if is_read:
-            passthru = vector_d.splat(vec1, zero)
-            elements = []
-
-            for i in range(elements_per_thread):
-                mask_elem = extract(mask, i)
-                offset_th = extract(offsets_vec, i)
-
-                if no_masked_load_store_ops:
-                    oob_index_value = _get_out_of_bounds_index(element_type)
-                    oob_index = arith_d.constant(IndexType.get(), oob_index_value)
-
-                    offsets_vec_type = (
-                        VectorType.get(vector_type.shape, IndexType.get())
-                        if offsets_vec is None
-                        else offsets_vec.type
-                    )
-
-                    # each of these are single element
-                    selected_index = arith_d.select(mask_elem, offset_th, oob_index)
-                    indices = [selected_index]
-                    elem = vector_d.load(vec1, mem, indices)
-
-                else:
-                    mask_elem = vector_d.splat(vec1_mask, mask_elem)
-                    elem = vector_d.maskedload(
-                        vec1, mem, [offset_th], mask_elem, passthru
-                    )
-                elements.append(elem)
-
-            elements = [extract(v, 0) for v in elements]
-            return vector_d.from_elements(vector_type, elements)
-        else:
-            for i in range(elements_per_thread):
-                mask_elem = extract(mask, i)
-
-                offset_th = extract(offsets_vec, i)
-
-                elem = extract(value, i)
-                elem = vector_d.splat(vec1, elem)
-
-                if no_masked_load_store_ops:
-                    oob_index_value = _get_out_of_bounds_index(element_type)
-                    oob_index = arith_d.constant(IndexType.get(), oob_index_value)
-
-                    selected_index = arith_d.select(mask_elem, offset_th, oob_index)
-                    vector_d.store(elem, mem, [selected_index])
-
-                else:
-                    mask_elem = vector_d.splat(vec1_mask, mask_elem)
-
-                    vector_d.maskedstore(mem, [offset_th], mask_elem, elem)
-
-            return
-
-    # Case 4: Default gather scatter case (slowest path).
-    if is_read:
-        passthru = vector_d.splat(vector_type, zero)
-        return vector_d.gather(
-            vector_type, mem, start_indices, offsets_vec, mask, passthru
-        )
-    else:
-        vector_d.scatter(mem, start_indices, offsets_vec, mask, value)
-        return
+    # Case 3: Gather or scatter op
+    passthru = vector_d.splat(vector_type, zero)
+    return (
+        vector_d.gather(vector_type, mem, start_indices, offsets_vec, mask, passthru)
+        if is_read
+        else vector_d.scatter(mem, start_indices, offsets_vec, mask, value)
+    )
 
 
 @handle_op(read)
