@@ -742,12 +742,16 @@ def _create_vec_read_write(
 
 
 def try_select_transpose_indices(
+    is_transpose,
     hardware_constraint, emitter
 ) -> Optional[Tuple[Value, Value]]:
     tid = (
         hardware_constraint.linearized_thread_id % hardware_constraint.threads_per_wave
     )
     tid_mlir = gen_sympy_index(add_emitter_subs(emitter), tid)
+
+    if not is_transpose:
+        return
 
     two = arith_d.constant(IndexType.get(), 2)
     eight = arith_d.constant(IndexType.get(), 8)
@@ -761,16 +765,37 @@ def try_select_transpose_indices(
             return [row, col]
 
         case MMAType.I32_32x32x16_I8:
-            row = arith_d.addi(
+            if not "counter" in try_select_transpose_indices.__dict__:
+                try_select_transpose_indices.counter = 0
+
+            static_offsets = [
+                (  0,   0), ( 16,   0), ( 32,   0), ( 48,   0),
+                (  0,  32), ( 16,  32), ( 32,  32), ( 48,  32),
+                (  0,  64), ( 16,  64), ( 32,  64), ( 48,  64),
+                (  0,  96), ( 16,  96), ( 32,  96), ( 48,  96),
+                (  0, 128), ( 16, 128), ( 32, 128), ( 48, 128),
+                (  0, 160), ( 16, 160), ( 32, 160), ( 48, 160),
+                (  0, 192), ( 16, 192), ( 32, 192), ( 48, 192),
+                (  0, 224), ( 16, 224), ( 32, 224), ( 48, 224),
+            ]
+
+            row_offset = static_offsets[try_select_transpose_indices.counter][0]
+            col_offset = static_offsets[try_select_transpose_indices.counter][1]
+            try_select_transpose_indices.counter += 1
+
+            row_offset_mlir = arith_d.constant(IndexType.get(), row_offset)
+            col_offset_mlir = arith_d.constant(IndexType.get(), col_offset)
+
+            row = arith_d.addi(row_offset_mlir, arith_d.addi(
                 arith_d.muli(arith_d.divsi(tid_mlir, thirty_two), eight),
-                arith_d.divsi(arith_d.remsi(tid_mlir, sixteen), two),
+                arith_d.divsi(arith_d.remsi(tid_mlir, sixteen), two)),
             )
-            col = arith_d.addi(
+            col = arith_d.addi(col_offset_mlir, arith_d.addi(
                 arith_d.muli(arith_d.remsi(tid_mlir, two), eight),
                 arith_d.muli(
                     arith_d.remsi(arith_d.divsi(tid_mlir, sixteen), two), sixteen
                 ),
-            )
+                ))
             return [row, col]
 
         # Unsupported MMA type (for transpose), so don't use the transpose instruction
@@ -801,7 +826,8 @@ def handle_read(emitter: WaveEmitter, node: fx.Node):
     elements_per_thread = cast_py_literal(emitter, elements_per_thread)
     custom_node = get_custom(node)
     hardware_constraint = get_hardware_constraint(emitter.constraints)
-    maybe_indices = try_select_transpose_indices(hardware_constraint, emitter)
+    is_transpose = custom_node.transpose
+    maybe_indices = try_select_transpose_indices(is_transpose, hardware_constraint, emitter)
 
     if custom_node.transpose == True and maybe_indices is not None:
         result = amdgpu_d.transpose_load(vector_type, kb_src, maybe_indices)
