@@ -265,8 +265,6 @@ def emit_global_to_lds(
                 read.mapping,
                 write.mapping,
                 bounds,
-                read.mapping_dynamic_vals,
-                write.mapping_dynamic_vals,
             ).add_to_graph(write.graph, loc=write.location)
 
         if i == 0:
@@ -400,6 +398,19 @@ def gather_to_shared(
 
         if not read.has_identity_mapping() and is_gather(read):
             logger.info("non-identity read mapping and gather is not supported yet")
+            continue
+
+        if len(read.mapping_dynamic_vals) > 0 or len(write.mapping_dynamic_vals) > 0:
+            logger.info("indirect loads or stores are not yet supported")
+            continue
+
+        if (
+            read.source is not None
+            or read.target is not None
+            or write.source is not None
+            or write.target is not None
+        ):
+            logger.info("new Indexing API is not yet supported")
             continue
 
         assert read.index == write.index
