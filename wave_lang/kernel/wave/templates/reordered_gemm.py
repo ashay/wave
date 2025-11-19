@@ -17,6 +17,7 @@ def get_reordered_matmul(
     block_m_size: int,
     block_n_size: int,
     block_k_size: int,
+    param_w: int,
     group_m_size: int,
     mfma_variant,
 ):
@@ -28,6 +29,7 @@ def get_reordered_matmul(
     BLOCK_M = tkl.sym.BLOCK_M
     BLOCK_N = tkl.sym.BLOCK_N
     BLOCK_K = tkl.sym.BLOCK_K
+    PARAM_W = tkl.sym.PARAM_W
     # The grouping factor to group columns by in our reordering scheme
     GROUP_SIZE_M = tkl.sym.GROUP_SIZE_M
     # Address space (for GPU, shared(1) or global(0))
@@ -39,38 +41,28 @@ def get_reordered_matmul(
     constraints += [tkw.WaveConstraint(M, BLOCK_M // 4)]
     constraints += [tkw.WaveConstraint(N, BLOCK_N // 2)]
 
-    # Global symbols representing the symbolic coordinates of each workgroup ie: (wg0, wg1)
-    wg0, wg1 = WORKGROUP_0, WORKGROUP_1
-    num_wg_0 = ceiling(M / BLOCK_M)
-    num_wg_1 = ceiling(N / BLOCK_N)
-
-    num_wgs_total = num_wg_0 * num_wg_1
-    # 8 XCDs on MI300s
+    # From Algorithm 1 in the paper titled HipKittens: Fast and Furious AMD Kernels
+    workgroups_in_dim_0 = ceiling(M / BLOCK_M)
+    workgroups_in_dim_1 = ceiling(N / BLOCK_N)
+    blocks = workgroups_in_dim_0 * workgroups_in_dim_1
+    xy = WORKGROUP_1 * workgroups_in_dim_0 + WORKGROUP_0
     num_xcds = 8
+    blocks_per_cycle = num_xcds * GROUP_SIZE_M
+    limit = (blocks // blocks_per_cycle) * blocks_per_cycle
+    xy = Min(xy, limit)
+    xcd = xy % num_xcds
+    local = xy // num_xcds
+    chunk_idx = local // GROUP_SIZE_M
+    pos = local % GROUP_SIZE_M
+    xy = chunk_idx * blocks_per_cycle + xcd * GROUP_SIZE_M + pos
 
-    # flatten workgroup index in column-major order since on hardware,
-    # workgroup dim 0 is the fastest dimension
-    flat_wg_index = wg1 * num_wg_0 + wg0
-    # create XCD-based index (wgs are assigned round-robin to XCDs)
-    extra_wgs = num_wgs_total % num_xcds
-    xcd_wg_index = (
-        (flat_wg_index % num_xcds) * (num_wgs_total // num_xcds)
-        + Min(flat_wg_index % num_xcds, extra_wgs)
-        + (flat_wg_index // num_xcds)
-    )
-    # num_wg_group is how many workgroups are in each group
-    num_wg_group = GROUP_SIZE_M * num_wg_1
-    group_id = xcd_wg_index // num_wg_group
-    first_wg_id_0 = group_id * GROUP_SIZE_M
-
-    # Clamping group_size_m to be >= 1 to prevent empty groups, or, groups of size 0.
-    # This ensures that every division or mod has a valid, nonzero divisor and stays within bounds.
-    # (we were seeing OOB accesses otherwise for certain test cases)
-    # Resolved Issue: https://github.com/iree-org/wave/issues/315 contains the list of failed TC.
-    group_size_m = Max(1, Min(num_wg_0 - first_wg_id_0, GROUP_SIZE_M))
-
-    new_wg0 = first_wg_id_0 + ((xcd_wg_index % num_wg_group) % group_size_m)
-    new_wg1 = (xcd_wg_index % num_wg_group) // group_size_m
+    tid_per_group = PARAM_W * workgroups_in_dim_1
+    group_id = xy // tid_per_group
+    first_row = group_id * PARAM_W
+    win_h = Min(workgroups_in_dim_0 - first_row, PARAM_W)
+    l = xy % tid_per_group
+    new_wg0 = first_row + (l % win_h)
+    new_wg1 = l // win_h
 
     constraints += [tkw.ReorderingConstraint(new_wg0, 0)]
     constraints += [tkw.ReorderingConstraint(new_wg1, 1)]
@@ -104,6 +96,7 @@ def get_reordered_matmul(
         BLOCK_M: block_m_size,
         BLOCK_N: block_n_size,
         BLOCK_K: block_k_size,
+        PARAM_W: param_w,
         GROUP_SIZE_M: group_m_size,
         ADDRESS_SPACE: SHARED_ADDRESS_SPACE,
     }

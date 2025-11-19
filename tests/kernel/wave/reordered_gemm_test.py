@@ -55,11 +55,13 @@ def testReorderedPingPongGemm(
     BLOCK_M = 128
     BLOCK_N = 256
     BLOCK_K = 64
+    # Window height
+    PARAM_W = 8
     # Group size
     GROUP_SIZE_M = 16
 
     reordered_gemm, hyperparams = get_reordered_matmul(
-        M, N, K, BLOCK_M, BLOCK_N, BLOCK_K, GROUP_SIZE_M, mfma_variant
+        M, N, K, BLOCK_M, BLOCK_N, BLOCK_K, PARAM_W, GROUP_SIZE_M, mfma_variant
     )
 
     options = WaveCompileOptions(
